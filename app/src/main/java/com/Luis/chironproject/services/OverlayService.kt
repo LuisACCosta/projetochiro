@@ -108,14 +108,23 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         )
     }
 
+    private var checkCounter = 0
+
     private fun startPeriodicCheck() {
         serviceScope.launch {
             while (true) {
                 delay(Constants.OVERLAY_CHECK_INTERVAL_MS)
-                val bitmap = captureScreen()
-                if (bitmap != null) {
-                    checkWithGemini(bitmap)
+                
+                // A cada minuto (tendo intervalos de 10s: a 1ª requisição no minuto será o ACK, depois de 6 requisições fará outra vez)
+                if (checkCounter % 6 == 0) {
+                    checkWithGeminiAck()
+                } else {
+                    val bitmap = captureScreen()
+                    if (bitmap != null) {
+                        checkWithGeminiImage(bitmap)
+                    }
                 }
+                checkCounter++
             }
         }
     }
@@ -140,11 +149,28 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         }
     }
 
-    private suspend fun checkWithGemini(bitmap: Bitmap) {
+    private suspend fun checkWithGeminiAck() {
         try {
             val response = gemini.generateContent(
                 content {
-                    image(bitmap)
+                    text("Por favor, responda apenas com a sigla ACK para verificarmos se a conexão está ativa.")
+                }
+            )
+            val result = response.text?.trim()?.uppercase()
+            android.util.Log.d("ChironDebug", "Comunicação Gemini (ACK) Recebida: $result")
+        } catch (e: Exception) {
+            android.util.Log.e("ChironDebug", "Erro na API Gemini no ACK: ${e.message}", e)
+        }
+    }
+
+    private suspend fun checkWithGeminiImage(bitmap: Bitmap) {
+        // Reduzir resolução para envio (evita gasto excessivo de memória/tráfego)
+        val scaledBitmap = Bitmap.createScaledBitmap(bitmap, bitmap.width / 2, bitmap.height / 2, true)
+        
+        try {
+            val response = gemini.generateContent(
+                content {
+                    image(scaledBitmap)
                     text(
                         "Analise este frame de vídeo e responda APENAS com INADEQUADO se contiver " +
                                 "qualquer um desses elementos: violência, sangue, armas, linguagem adulta, " +
@@ -162,6 +188,10 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             }
         } catch (e: Exception) {
             e.printStackTrace()
+            android.util.Log.e("ChironDebug", "Erro na API Gemini: ${e.message}", e)
+        } finally {
+            bitmap.recycle() // Libera memória do print original
+            scaledBitmap.recycle()
         }
     }
 
