@@ -1,56 +1,36 @@
 package com.Luis.chironproject.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
-)
-
-private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+// Esquema único da identidade Chiron (versão primária):
+// fundo ROXO, textos em LARANJA, botão LARANJA com texto ROXO dentro.
+// Usado tanto no modo claro quanto no escuro pra manter a identidade sempre igual.
+private val ChironColorScheme = lightColorScheme(
+    primary = ChironLaranja,            // cor do botão (caixa laranja)
+    onPrimary = ChironRoxoProfundo,     // texto DENTRO do botão (roxo)
+    secondary = ChironLaranjaClaro,
+    onSecondary = ChironRoxoProfundo,
+    tertiary = ChironMagenta,
+    background = ChironRoxoProfundo,     // fundo geral (roxo)
+    onBackground = ChironLaranja,        // texto sobre o fundo (laranja)
+    surface = ChironRoxoProfundo,        // superfícies (mesmo roxo do fundo)
+    onSurface = ChironLaranja            // texto sobre superfícies (laranja)
 )
 
 @Composable
 fun ChironProjectTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
+    // dynamicColor DESLIGADO de propósito: com ele ligado, o Android usaria
+    // as cores do papel de parede do usuário e ignoraria a identidade Chiron.
     content: @Composable () -> Unit
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
-
+    // Mesmo esquema sempre, independente de claro/escuro.
     MaterialTheme(
-        colorScheme = colorScheme,
+        colorScheme = ChironColorScheme,
         typography = Typography,
         content = content
     )
