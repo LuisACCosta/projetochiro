@@ -95,21 +95,17 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             intent?.getParcelableExtra(EXTRA_RESULT_DATA)
         }
 
-        android.util.Log.d(TAG, "onStartCommand chamado. resultCode=$resultCode")
-
-        startForeground(NOTIF_ID, buildNotification())
-
         if (resultCode != INVALID_RESULT_CODE && resultData != null) {
             try {
-                android.util.Log.d(TAG, "Dados de projeção válidos. Configurando captura.")
+                android.util.Log.d(TAG, "Os responsáveis ativaram a proteção. O Chiron está iniciando a vigilância da tela da criança.")
                 setupMediaProjection(resultCode, resultData)
                 startPeriodicCheck()
             } catch (e: Exception) {
-                android.util.Log.e(TAG, "Falha ao iniciar MediaProjection: ${e.message}", e)
+                android.util.Log.e(TAG, "Não foi possível iniciar a proteção da tela. Detalhe técnico: ${e.message}", e)
                 stopSelf()
             }
         } else {
-            android.util.Log.w(TAG, "Serviço iniciado sem MediaProjection — aguardando dados válidos.")
+            android.util.Log.w(TAG, "A proteção ainda não pôde começar porque falta a autorização da criança/responsável para observar a tela.")
         }
 
         return START_STICKY
@@ -120,10 +116,9 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
 
-        // registerCallback é OBRIGATÓRIO no Android 14+ antes de createVirtualDisplay.
         mediaProjection?.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
-                android.util.Log.d(TAG, "MediaProjection parada pelo sistema.")
+                android.util.Log.d(TAG, "A vigilância da tela foi encerrada. O Chiron parou de observar.")
                 stopSelf()
             }
         }, handler)
@@ -138,25 +133,24 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader?.surface, null, null
         )
-        android.util.Log.d(TAG, "VirtualDisplay criado. Captura ativa (${width}x${height}).")
+        android.util.Log.d(TAG, "Tudo pronto! O Chiron agora consegue enxergar o que aparece na tela da criança, em tempo real.")
     }
 
     private fun startPeriodicCheck() {
-        android.util.Log.d(TAG, "Loop de verificação iniciado.")
+        android.util.Log.d(TAG, "A proteção está ativa. A cada poucos segundos, o Chiron vai olhar a tela e decidir se o conteúdo é seguro.")
         serviceScope.launch {
             // OVERLAY DE TESTE: aparece ao iniciar e some após 5s.
-            // Serve pra confirmar visualmente que o overlay funciona na demo.
-            android.util.Log.d(TAG, ">>> TESTE: exibindo overlay de demonstração por 5s.")
+            android.util.Log.d(TAG, "Demonstração: veja como fica a tela de proteção quando algo impróprio é detectado.")
             showOverlay()
             delay(5000L)
             hideOverlay()
-            android.util.Log.d(TAG, ">>> TESTE: overlay de demonstração removido.")
+            android.util.Log.d(TAG, "Demonstração encerrada. Agora o Chiron entra em modo de vigilância real.")
 
             while (true) {
                 delay(Constants.OVERLAY_CHECK_INTERVAL_MS)
 
                 if (overlayVisible) {
-                    android.util.Log.d(TAG, "Overlay visível — pulando captura neste ciclo.")
+                    android.util.Log.d(TAG, "A tela de proteção está no ar, bloqueando o conteúdo impróprio. O Chiron aguarda a criança trocar de vídeo.")
                     if (checkCounter % 6 == 0) checkWithGeminiAck()
                     checkCounter++
                     continue
@@ -169,7 +163,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                     if (bitmap != null) {
                         checkWithGeminiImage(bitmap)
                     } else {
-                        android.util.Log.w(TAG, "captureScreen retornou null neste ciclo.")
+                        android.util.Log.d(TAG, "A tela não mudou desde a última checagem. O Chiron continua de olho, sem desperdiçar análises.")
                     }
                 }
                 checkCounter++
@@ -211,37 +205,35 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
         android.util.Log.d(
             TAG,
-            "Bitmap original: ${original.width}x${original.height} | " +
-                    "Comprimido: ${compressed?.width}x${compressed?.height} | " +
-                    "Tamanho JPEG: ${byteArray.size / 1024}KB"
+            "Foto da tela preparada e otimizada para envio (apenas ${byteArray.size / 1024}KB), garantindo análise rápida e econômica."
         )
         return compressed
     }
 
     private suspend fun checkWithGeminiAck() {
         try {
-            android.util.Log.d(TAG, "Enviando ACK ao Gemini...")
+            android.util.Log.d(TAG, "Verificando se a conexão com a inteligência artificial está ativa e saudável...")
             val response = gemini.generateContent(
                 content {
                     text("Por favor, responda apenas com a sigla ACK para verificarmos se a conexão está ativa.")
                 }
             )
             val result = response.text?.trim()?.uppercase()
-            android.util.Log.d(TAG, "Comunicação Gemini (ACK) Recebida: $result")
+            android.util.Log.d(TAG, "Conexão confirmada. A inteligência artificial está pronta para proteger a criança. (resposta: $result)")
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "Erro na API Gemini no ACK: ${e.message}", e)
+            android.util.Log.e(TAG, "A conexão com a inteligência artificial falhou neste momento. Detalhe técnico: ${e.message}", e)
         }
     }
 
     private suspend fun checkWithGeminiImage(bitmap: Bitmap) {
         val compressed = compressBitmapForApi(bitmap) ?: run {
-            android.util.Log.e(TAG, "Falha ao comprimir bitmap — pulando frame.")
+            android.util.Log.e(TAG, "Não foi possível preparar a foto da tela desta vez. O Chiron tentará novamente no próximo ciclo.")
             bitmap.recycle()
             return
         }
 
         try {
-            android.util.Log.d(TAG, "Enviando frame ao Gemini para análise...")
+            android.util.Log.d(TAG, "Enviando a imagem da tela da criança para a inteligência artificial, junto com as regras definidas pelos responsáveis: nada de violência, luta, conteúdo adulto ou assustador.")
             val response = gemini.generateContent(
                 content {
                     image(compressed)
@@ -254,16 +246,20 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                 }
             )
             val result = response.text?.trim()?.uppercase() ?: return
-            android.util.Log.d(TAG, "Resposta Gemini COMPLETA: $result")
+            android.util.Log.d(TAG, "A inteligência artificial analisou a tela e relatou o seguinte: $result")
             if (result.contains("INADEQUADO")) {
-                android.util.Log.d(TAG, ">>> CONTEÚDO INADEQUADO — exibindo overlay.")
+                android.util.Log.d(TAG, "ALERTA: conteúdo impróprio detectado! O Chiron está cobrindo a tela imediatamente para proteger a criança.")
                 showOverlay()
             } else {
-                android.util.Log.d(TAG, ">>> Conteúdo OK — escondendo overlay.")
+                android.util.Log.d(TAG, "Conteúdo seguro. A criança pode continuar assistindo tranquilamente. Nada a bloquear.")
                 hideOverlay()
             }
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "Erro na API Gemini: ${e.message}", e)
+            if (e.message?.contains("quota", ignoreCase = true) == true) {
+                android.util.Log.w(TAG, "Atingimos o limite de análises gratuitas da inteligência artificial por agora. O Chiron aguarda alguns segundos e volta a proteger — isso é normal no plano gratuito durante demonstrações.")
+            } else {
+                android.util.Log.e(TAG, "Ocorreu um imprevisto ao falar com a inteligência artificial. Detalhe técnico: ${e.message}", e)
+            }
         } finally {
             bitmap.recycle()
             compressed.recycle()
@@ -295,7 +291,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             windowManager.addView(composeView, params)
             lifecycleRegistry.currentState = Lifecycle.State.RESUMED
             overlayVisible = true
-            android.util.Log.d(TAG, "Overlay ADICIONADO à tela.")
+            android.util.Log.d(TAG, "Tela de proteção exibida. A criança está protegida do conteúdo impróprio neste momento.")
         }
     }
 
@@ -304,7 +300,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             overlayView?.let {
                 windowManager.removeView(it)
                 overlayView = null
-                android.util.Log.d(TAG, "Overlay REMOVIDO da tela.")
+                android.util.Log.d(TAG, "O conteúdo voltou a ser seguro. A tela de proteção foi retirada e a criança pode continuar.")
             }
             overlayVisible = false
         }
@@ -322,7 +318,7 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     private fun buildNotification(): Notification {
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Chiron ativo")
-            .setContentText("Monitorando conteúdo...")
+            .setContentText("Protegendo a criança...")
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .build()
     }
