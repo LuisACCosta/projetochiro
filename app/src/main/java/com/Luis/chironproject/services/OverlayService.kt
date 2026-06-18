@@ -16,9 +16,9 @@ import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.compose.ui.platform.ComposeView
-import android.view.ViewGroup
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -28,41 +28,53 @@ import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.Luis.chironproject.utils.Constants
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.content
+// --- IMPORTS NOVOS: Firebase AI Logic (substituem com.google.ai.client.generativeai) ---
+import com.google.firebase.Firebase
+import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.GenerativeBackend
+import com.google.firebase.ai.type.content
+// ----------------------------------------------------------------------------------------
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 
 class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
-    // Lifecycle necessário pro ComposeView funcionar fora de uma Activity
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val savedStateRegistryController = SavedStateRegistryController.create(this)
     override val lifecycle: Lifecycle get() = lifecycleRegistry
     override val savedStateRegistry: SavedStateRegistry get() = savedStateRegistryController.savedStateRegistry
 
-    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    // PRIORIDADE 6: scope agora roda em Default (trabalho pesado fora da main thread)
+    private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private lateinit var windowManager: WindowManager
     private var overlayView: ViewGroup? = null
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private val handler = Handler(Looper.getMainLooper())
+    private var checkCounter = 0
 
-    private val gemini = GenerativeModel(
-        modelName = "gemini-1.5-flash",
-        apiKey = Constants.GEMINI_API_KEY
-    )
+    // PRIORIDADE 5: flag pra pausar a captura enquanto o overlay está visível
+    @Volatile
+    private var overlayVisible = false
+
+    // PRIORIDADE 2 e 3: inicialização via Firebase AI Logic + modelo vivo (gemini-2.5-flash)
+    private val gemini = Firebase.ai(backend = GenerativeBackend.googleAI())
+        .generativeModel("gemini-2.5-flash")
 
     companion object {
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val CHANNEL_ID = "chiron_overlay_channel"
         const val NOTIF_ID = 1
+        const val MAX_BITMAP_WIDTH = 720
+        const val JPEG_QUALITY = 75
     }
 
     override fun onCreate() {
@@ -77,15 +89,28 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
 
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
-        val resultData = intent?.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
+        val resultData = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            intent?.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra(EXTRA_RESULT_DATA)
+        }
 
-        // ✅ Log AQUI, depois de declarar as variáveis
-        android.util.Log.d("ChironDebug", "onStartCommand chamado. resultCode=$resultCode, resultData=$resultData")
+        android.util.Log.d("ChironDebug", "onStartCommand chamado. resultCode=$resultCode")
+
+        startForeground(NOTIF_ID, buildNotification())
 
         if (resultCode != -1 && resultData != null) {
-            startForeground(NOTIF_ID, buildNotification())
-            setupMediaProjection(resultCode, resultData)
-            startPeriodicCheck()
+            // PRIORIDADE 1: setup protegido por try/catch pra não derrubar o serviço
+            try {
+                setupMediaProjection(resultCode, resultData)
+                startPeriodicCheck()
+            } catch (e: Exception) {
+                android.util.Log.e("ChironDebug", "Falha ao iniciar MediaProjection: ${e.message}", e)
+                stopSelf()
+            }
+        } else {
+            android.util.Log.w("ChironDebug", "Serviço iniciado sem MediaProjection — aguardando dados válidos.")
         }
 
         return START_STICKY
@@ -95,6 +120,15 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         val projectionManager =
             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
+
+        // PRIORIDADE 1: registerCallback é OBRIGATÓRIO no Android 14+ (targetSdk 36).
+        // Sem isso, createVirtualDisplay lança IllegalStateException e o serviço quebra.
+        mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                android.util.Log.d("ChironDebug", "MediaProjection parada pelo sistema.")
+                stopSelf()
+            }
+        }, handler)
 
         val width = resources.displayMetrics.widthPixels
         val height = resources.displayMetrics.heightPixels
@@ -108,14 +142,21 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         )
     }
 
-    private var checkCounter = 0
-
     private fun startPeriodicCheck() {
         serviceScope.launch {
             while (true) {
                 delay(Constants.OVERLAY_CHECK_INTERVAL_MS)
-                
-                // A cada minuto (tendo intervalos de 10s: a 1ª requisição no minuto será o ACK, depois de 6 requisições fará outra vez)
+
+                // PRIORIDADE 5: se o overlay está visível, não captura
+                // (senão capturaria a própria tela preta do overlay → loop de piscar)
+                if (overlayVisible) {
+                    android.util.Log.d("ChironDebug", "Overlay visível — pulando captura neste ciclo.")
+                    // ainda faz um ACK ocasional pra confirmar conexão
+                    if (checkCounter % 6 == 0) checkWithGeminiAck()
+                    checkCounter++
+                    continue
+                }
+
                 if (checkCounter % 6 == 0) {
                     checkWithGeminiAck()
                 } else {
@@ -149,6 +190,28 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         }
     }
 
+    // PRIORIDADE 4: retorna null em vez de quebrar se a compressão falhar
+    private fun compressBitmapForApi(original: Bitmap): Bitmap? {
+        val scale = MAX_BITMAP_WIDTH.toFloat() / original.width
+        val scaledHeight = (original.height * scale).toInt()
+        val scaled = Bitmap.createScaledBitmap(original, MAX_BITMAP_WIDTH, scaledHeight, true)
+
+        val stream = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, stream)
+        val byteArray = stream.toByteArray()
+        val compressed = android.graphics.BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
+
+        if (scaled != original) scaled.recycle()
+
+        android.util.Log.d(
+            "ChironDebug",
+            "Bitmap original: ${original.width}x${original.height} | " +
+                    "Comprimido: ${compressed?.width}x${compressed?.height} | " +
+                    "Tamanho JPEG: ${byteArray.size / 1024}KB"
+        )
+        return compressed
+    }
+
     private suspend fun checkWithGeminiAck() {
         try {
             val response = gemini.generateContent(
@@ -164,13 +227,16 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     }
 
     private suspend fun checkWithGeminiImage(bitmap: Bitmap) {
-        // Reduzir resolução para envio (evita gasto excessivo de memória/tráfego)
-        val scaledBitmap = Bitmap.createScaledBitmap(bitmap, bitmap.width / 2, bitmap.height / 2, true)
-        
+        val compressed = compressBitmapForApi(bitmap) ?: run {
+            android.util.Log.e("ChironDebug", "Falha ao comprimir bitmap — pulando frame.")
+            bitmap.recycle()
+            return
+        }
+
         try {
             val response = gemini.generateContent(
                 content {
-                    image(scaledBitmap)
+                    image(compressed)
                     text(
                         "Analise este frame de vídeo e responda APENAS com INADEQUADO se contiver " +
                                 "qualquer um desses elementos: violência, sangue, armas, linguagem adulta, " +
@@ -181,35 +247,35 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
                 }
             )
             val result = response.text?.trim()?.uppercase() ?: return
+            android.util.Log.d("ChironDebug", "Resposta Gemini: $result")
             if (result.contains("INADEQUADO")) {
                 showOverlay()
             } else {
                 hideOverlay()
             }
         } catch (e: Exception) {
-            e.printStackTrace()
             android.util.Log.e("ChironDebug", "Erro na API Gemini: ${e.message}", e)
         } finally {
-            bitmap.recycle() // Libera memória do print original
-            scaledBitmap.recycle()
+            bitmap.recycle()
+            compressed.recycle()
         }
     }
 
-    private fun showOverlay() {
-        if (overlayView != null) return
-        handler.post {
+    // PRIORIDADE 6: addView precisa rodar na main thread; usamos withContext(Main)
+    private suspend fun showOverlay() {
+        if (overlayVisible) return
+        withContext(Dispatchers.Main) {
+            if (overlayView != null) return@withContext
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                // FLAG_NOT_TOUCHABLE = overlay não recebe toques (a criança não consegue fechar)
-                // FLAG_NOT_FOCUSABLE = não interfere no foco do app por baixo
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
             )
 
-            val composeView = ComposeView(this).apply {
+            val composeView = ComposeView(this@OverlayService).apply {
                 setViewTreeLifecycleOwner(this@OverlayService)
                 setViewTreeSavedStateRegistryOwner(this@OverlayService)
                 setContent {
@@ -220,15 +286,17 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
             overlayView = composeView
             windowManager.addView(composeView, params)
             lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+            overlayVisible = true
         }
     }
 
-    private fun hideOverlay() {
-        handler.post {
+    private suspend fun hideOverlay() {
+        withContext(Dispatchers.Main) {
             overlayView?.let {
                 windowManager.removeView(it)
                 overlayView = null
             }
+            overlayVisible = false
         }
     }
 
@@ -254,7 +322,13 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     override fun onDestroy() {
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         serviceScope.cancel()
-        hideOverlay()
+        // hideOverlay direto na main (onDestroy não é suspend)
+        handler.post {
+            overlayView?.let {
+                windowManager.removeView(it)
+                overlayView = null
+            }
+        }
         virtualDisplay?.release()
         mediaProjection?.stop()
         imageReader?.close()

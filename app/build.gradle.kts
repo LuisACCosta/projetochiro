@@ -1,6 +1,8 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    // Plugin do Google Services para ler o google-services.json
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -47,10 +49,13 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
 
-    // ADICIONAR ESTAS 3:
-    implementation("com.google.ai.client.generativeai:generativeai:0.7.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    implementation("androidx.lifecycle:lifecycle-service:2.7.0")
+    // Firebase AI Logic (substitui o SDK morto com.google.ai.client.generativeai)
+    implementation(platform("com.google.firebase:firebase-bom:34.15.0"))
+    implementation("com.google.firebase:firebase-ai")
+
+    // Coroutines e lifecycle-service continuam necessários
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("androidx.lifecycle:lifecycle-service:2.10.0")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
