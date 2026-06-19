@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -13,6 +14,7 @@ import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -60,8 +62,10 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     @Volatile
     private var overlayVisible = false
 
+    // Trocado para gemini-2.5-flash-lite: cota diária bem maior (1.000 req/dia vs 250),
+    // ideal pra testar e gravar a demo sem estourar o limite gratuito.
     private val gemini = Firebase.ai(backend = GenerativeBackend.googleAI())
-        .generativeModel("gemini-2.5-flash")
+        .generativeModel("gemini-2.5-flash-lite")
 
     companion object {
         const val TAG = "ChironDebug"
@@ -93,6 +97,19 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
         } else {
             @Suppress("DEPRECATION")
             intent?.getParcelableExtra(EXTRA_RESULT_DATA)
+        }
+
+        // O serviço PRECISA virar foreground ANTES de iniciar a captura.
+        // No Android 14+ é obrigatório declarar o tipo MEDIA_PROJECTION aqui na chamada,
+        // não só no manifesto — senão o sistema bloqueia a captura por segurança.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIF_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        } else {
+            startForeground(NOTIF_ID, buildNotification())
         }
 
         if (resultCode != INVALID_RESULT_CODE && resultData != null) {
